@@ -31,6 +31,9 @@ type 'a t = {
   mutable lines : Zed_lines.t;
   (* The set of line position of [text]. *)
 
+  newline : Zed_lines.newline;
+  (* The type of newline sequence. *)
+
   changes : (int * int * int) event;
   send_changes : (int * int * int) -> unit;
   (* Changes of the contents. *)
@@ -103,7 +106,7 @@ let new_clipboard () =
     clipboard_set = (fun x -> r := x) }
 
 
-let create ?(editable=fun _pos _len -> true) ?(move = (+)) ?clipboard ?(match_word = match_by_regexp regexp_word) ?(locale = S.const None) ?(undo_size = 1000) () =
+let create ?(editable=fun _pos _len -> true) ?(move = (+)) ?clipboard ?(match_word = match_by_regexp regexp_word) ?(locale = S.const None) ?(undo_size = 1000) ?newline () =
   (* I'm not sure how to disable the unused warning with ocaml.warning and the
      argument can't be removed as it's part of the interface *)
   let _ = move in
@@ -117,10 +120,16 @@ let create ?(editable=fun _pos _len -> true) ?(move = (+)) ?clipboard ?(match_wo
       | None ->
           new_clipboard ()
   in
+  let newline =
+    match newline with
+    | Some newline-> newline
+    | None -> Zed_lines.default_newline ()
+  in
   let edit = {
     data = None;
     text = Zed_rope.empty;
     lines = Zed_lines.empty;
+    newline;
     changes;
     send_changes;
     erase_mode;
@@ -291,17 +300,17 @@ let insert ctx rope =
       let text_len = Zed_rope.length ctx.edit.text in
       if position + len > text_len then begin
         ctx.edit.text <- Zed_rope.replace text position (text_len - position) rope;
-        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position (text_len - position) (Zed_lines.of_rope rope);
+        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position (text_len - position) (Zed_lines.of_rope ~newline:ctx.edit.newline rope);
         modify ctx text lines position position len (text_len - position)
       end else begin
         ctx.edit.text <- Zed_rope.replace text position len rope;
-        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope rope);
+        ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope ~newline:ctx.edit.newline rope);
         modify ctx text lines position position len len;
       end;
       move ctx len
     end else begin
       ctx.edit.text <- Zed_rope.insert ctx.edit.text position rope;
-      ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope rope);
+      ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope ~newline:ctx.edit.newline rope);
       modify ctx text lines position position len 0;
       move ctx len
     end
@@ -313,7 +322,7 @@ let insert_no_erase ctx rope =
   if not ctx.check || ctx.edit.editable position 0 then begin
     let len = Zed_rope.length rope and text = ctx.edit.text and lines = ctx.edit.lines in
     ctx.edit.text <- Zed_rope.insert text position rope;
-    ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope rope);
+    ctx.edit.lines <- Zed_lines.insert ctx.edit.lines position (Zed_lines.of_rope ~newline:ctx.edit.newline rope);
     modify ctx text lines position position len 0;
     move ctx len
   end else
@@ -351,17 +360,21 @@ let replace ctx len rope =
   if not ctx.check || ctx.edit.editable position len then begin
     let rope_len = Zed_rope.length rope and text = ctx.edit.text and lines = ctx.edit.lines in
     ctx.edit.text <- Zed_rope.replace text position len rope;
-    ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope rope);
+    ctx.edit.lines <- Zed_lines.replace ctx.edit.lines position len (Zed_lines.of_rope ~newline:ctx.edit.newline rope);
     modify ctx text lines position position rope_len len;
     move ctx rope_len
   end else
     raise Cannot_edit
 
-let newline_rope =
-  Zed_rope.singleton (UChar.of_char '\n')
+let newline_rope ctx=
+  match ctx.edit.newline with
+  | Lf-> Zed_rope.of_string Zed_lines.lf
+  | CrLf-> Zed_rope.of_string Zed_lines.crlf
+  | Cr-> Zed_rope.of_string Zed_lines.cr
+  | LfCr-> Zed_rope.of_string Zed_lines.lfcr
 
 let newline ctx =
-  insert ctx newline_rope
+  insert ctx (newline_rope ctx)
 
 let next_char ctx =
   if not (at_eot ctx) then move ctx 1
@@ -724,7 +737,7 @@ let get_action = function
 
 let doc_of_action = function
   | Insert _ -> "insert the given character."
-  | Newline -> "insert a newline character."
+  | Newline -> "insert newline sequence."
   | Next_char -> "move the cursor to the next character."
   | Prev_char -> "move the cursor to the previous character."
   | Next_line -> "move the cursor to the next line."

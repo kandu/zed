@@ -20,6 +20,21 @@ exception Out_of_bounds
 type t
   (** Type of sets of line positions. *)
 
+  (** Type of newline sequence. *)
+type newline =
+  | Lf
+  | Cr
+  | CrLf
+  | LfCr
+
+val lf : string
+val cr : string
+val crlf : string
+val lfcr : string
+
+val default_newline : unit -> newline
+  (** return the default newline sequence on current OS. *)
+
 val length : t -> int
   (** Returns the length of the set, i.e. the number of characters in
       the set. *)
@@ -27,8 +42,9 @@ val length : t -> int
 val count : t -> int
   (** Returns the number of newlines in the set. *)
 
-val of_rope : Zed_rope.t -> t
-  (** [of_rope rope] returns the set of newline positions in [rope]. *)
+val of_rope : ?newline:newline -> Zed_rope.t -> t
+  (** [of_rope rope] returns the set of newline positions in [rope].
+      @param newline the type of newline sequence *)
 
 val empty : t
   (** The empty set. *)

@@ -21,10 +21,27 @@ type t =
   | String of int
       (* [String len] is a string of length [len] without newline
          character. *)
-  | Return
-      (* A newline character. *)
+  | Return of int
+      (* A newline sequence. *)
   | Concat of t * t * int * int * int
       (* [Concat(t1, t2, len, count, depth)] *)
+
+type newline =
+  | Lf
+  | Cr
+  | CrLf
+  | LfCr
+
+let lf= "\n"
+let cr= "\r"
+let crlf= "\r\n"
+let lfcr= "\n\r"
+
+let default_newline ()=
+  if Sys.win32 then
+    CrLf
+  else
+    Lf
 
 (* +-----------------------------------------------------------------+
    | Basic functions                                                 |
@@ -32,16 +49,16 @@ type t =
 
 let length = function
   | String len -> len
-  | Return -> 1
+  | Return len -> len
   | Concat(_, _, len, _, _) -> len
 
 let count = function
   | String _ -> 0
-  | Return -> 1
+  | Return _ -> 1
   | Concat(_, _, _, count, _) -> count
 
 let depth = function
-  | String _ | Return -> 0
+  | String _ | Return _-> 0
   | Concat(_, _, _, _, d) -> d
 
 let empty = String 0
@@ -54,8 +71,8 @@ let rec line_index_rec set ofs acc =
   match set with
     | String _ ->
         acc
-    | Return ->
-        if ofs = 0 then
+    | Return len->
+        if ofs < len then
           acc
         else
           acc + 1
@@ -76,11 +93,11 @@ let rec line_start_rec set idx acc =
   match set with
     | String _ ->
         acc
-    | Return ->
+    | Return len->
         if idx = 0 then
           acc
         else
-          acc + 1
+          acc + len
     | Concat(s1, s2, _, _, _) ->
         let count1 = count s1 in
         if idx <= count1 then
@@ -127,28 +144,28 @@ let append set1 set2 =
         let d1 = depth set1 and d2 = depth set2 in
         if d1 > d2 + 2 then begin
           match set1 with
-            | String _ | Return ->
+            | String _ | Return _->
                 assert false
             | Concat(set1_1, set1_2, _, _, _) ->
                 if depth set1_1 >= depth set1_2 then
                   concat set1_1 (concat set1_2 set2)
                 else begin
                   match set1_2 with
-                    | String _ | Return ->
+                    | String _ | Return _ ->
                         assert false
                     | Concat(set1_2_1, set1_2_2, _, _, _) ->
                         concat (concat set1_1 set1_2_1) (concat set1_2_2 set2)
                 end
         end else if d2 > d1 + 2 then begin
           match set2 with
-            | String _ | Return ->
+            | String _ | Return _->
                 assert false
             | Concat(set2_1, set2_2, _, _, _) ->
                 if depth set2_2 >= depth set2_1 then
                   concat (concat set1 set2_1) set2_2
                 else begin
                   match set2_1 with
-                    | String _ | Return ->
+                    | String _ | Return _->
                         assert false
                     | Concat(set2_1_1, set2_1_2, _, _, _) ->
                         concat (concat set1 set2_1_1) (concat set2_1_2 set2_2)
@@ -160,9 +177,9 @@ let rec unsafe_sub set idx len =
   match set with
     | String _ ->
         String len
-    | Return ->
-        if len = 1 then
-          Return
+    | Return len'->
+        if len = len' then
+          Return len'
         else
           String 0
     | Concat(set_l, set_r, len', _, _) ->
@@ -205,24 +222,79 @@ let replace set ofs len repl =
    | Sets from ropes                                                 |
    +-----------------------------------------------------------------+ *)
 
-let of_rope rope =
+let is_lf zip=
+  let ch, zip = Zed_rope.Zip.next zip in
+  if UChar.code ch = int_of_char '\n' then
+    `Ok (1, zip)
+  else
+    `Error (1, zip)
+
+let is_cr zip=
+  let ch, zip = Zed_rope.Zip.next zip in
+  if UChar.code ch = int_of_char '\r' then
+    `Ok (1, zip)
+  else
+    `Error (1, zip)
+
+let is_crlf zip=
+  let ch, zip = Zed_rope.Zip.next zip in
+  if UChar.code ch = int_of_char '\r' then
+    if Zed_rope.Zip.at_eos zip then
+      `Error (1, zip)
+    else
+      let ch, zip' = Zed_rope.Zip.next zip in
+      if UChar.code ch = int_of_char '\n' then
+        `Ok (2, zip')
+      else
+        `Error (1, zip)
+  else
+    `Error (1, zip)
+
+let is_lfcr zip=
+  let ch, zip = Zed_rope.Zip.next zip in
+  if UChar.code ch = int_of_char '\n' then
+    if Zed_rope.Zip.at_eos zip then
+      `Error (1, zip)
+    else
+      let ch, zip' = Zed_rope.Zip.next zip in
+      if UChar.code ch = int_of_char '\r' then
+        `Ok (2, zip')
+      else
+        `Error (1, zip)
+  else
+    `Error (1, zip)
+
+let of_rope ?newline rope =
+  let is_newline=
+    match newline with
+    | None->
+      (match default_newline () with
+      | Lf -> is_lf
+      | CrLf -> is_crlf
+      | Cr -> is_cr
+      | LfCr -> is_lfcr)
+    | Some Lf-> is_lf
+    | Some Cr-> is_cr
+    | Some CrLf-> is_crlf
+    | Some LfCr-> is_lfcr
+  in
   let rec loop zip len acc =
     if Zed_rope.Zip.at_eos zip then
       append acc (String len)
     else
-      let ch, zip = Zed_rope.Zip.next zip in
-      if UChar.code ch = 10 then
-        loop0 zip (append (append acc (String len)) Return)
-      else
-        loop zip (len + 1) acc
+      match is_newline zip with
+      | `Ok (len_newline, zip)->
+        loop0 zip (append (append acc (String len)) (Return len_newline))
+      | `Error (len_other, zip)->
+        loop zip (len + len_other) acc
   and loop0 zip acc =
     if Zed_rope.Zip.at_eos zip then
       acc
     else
-      let ch, zip = Zed_rope.Zip.next zip in
-      if UChar.code ch = 10 then
-        loop0 zip (append acc Return)
-      else
-        loop zip 1 acc
+      match is_newline zip with
+      | `Ok (len_newline, zip)->
+        loop0 zip (append acc (Return len_newline))
+      | `Error (len_other, zip)->
+        loop zip len_other acc
   in
   loop0 (Zed_rope.Zip.make_f rope 0) empty

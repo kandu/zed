@@ -34,6 +34,7 @@ val create :
   ?match_word : (Zed_rope.t -> int -> int option) ->
   ?locale : string option signal ->
   ?undo_size : int ->
+  ?newline : Zed_lines.newline ->
   unit -> 'a t
   (** [create ?editable ?move ?clipboard ()] creates a new edition
       engine in the initial state.
@@ -54,7 +55,10 @@ val create :
       mapping.
 
       [undo_size] is the size of the undo buffer. It is the number of
-      state zed will remember. It defaults to [1000]. *)
+      state zed will remember. It defaults to [1000].
+
+      [newline] is the newline sequence of the text. If not specified,
+      it will be automatically determined based on the OS type. *)
 
 val match_by_regexp : Zed_re.t -> Zed_rope.t -> int -> int option
   (** [match_by_regexp re] creates a word-matching function using a
