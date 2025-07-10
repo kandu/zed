@@ -20,6 +20,7 @@ exception Out_of_bounds
       bounds of a set. *)
 
 type line
+  (** Type of lines. *)
 
 type t
   (** Type of sets of line positions. *)
@@ -41,7 +42,7 @@ val width : ?tolerant:bool -> t -> int -> int -> (int, int) result
   (** Returns the width of the given string. *)
 
 val force_width : t -> int -> int -> int
-  (** Returns the width of the given string. If error encounted, returns the width of the legit part *)
+  (** Returns the width of the given string. If error encountered, returns the width of the legit part *)
 
 val line_index : t -> int -> int
   (** [line_index set ofs] returns the line number of the line

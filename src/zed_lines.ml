@@ -21,16 +21,23 @@ exception Out_of_bounds
 type line=
   {
     length: int;
+      (* character number *)
     width: int;
+      (* the width info of the line *)
     width_info: int array;
+      (* the width info of each character *)
   }
 
 type t =
   | String of line
       (* [String len] is a string of length [len] without newline
          character. *)
-  | Return
+  | Newline
       (* A newline character. *)
+  | Return
+      (* A return character. *)
+  | ReturnNewline
+      (* Windows CRNL line break. *)
   | Concat of t * t * int * int * int
       (* [Concat(t1, t2, len, count, depth)] *)
 
@@ -42,54 +49,68 @@ let empty_line ()= { length= 0; width= 0; width_info= [||] }
 
 let length = function
   | String line -> line.length
-  | Return -> 1
+  | Newline | Return -> 1
+  | ReturnNewline -> 2
   | Concat(_, _, len, _, _) -> len
 
 let count = function
   | String _ -> 0
-  | Return -> 1
+  | Newline | Return | ReturnNewline -> 1
   | Concat(_, _, _, count, _) -> count
 
 let depth = function
-  | String _ | Return -> 0
+  | String _ | Newline | Return | ReturnNewline -> 0
   | Concat(_, _, _, _, d) -> d
 
 let empty = String (empty_line ())
 
 let unsafe_width ?(tolerant=false) set idx len=
   let start= idx
-  and len_all= len
-  and acc=
-    if tolerant then
-      fun a b-> (+)
-        (if a < 0 then 1 else a)
-        (if b < 0 then 1 else b)
-    else
-      (+)
+  and tolerant_add=
+    fun a b-> (+)
+      (if a < 0 then 1 else a)
+      (if b < 0 then 1 else b)
   in
-  let rec unsafe_width set idx len=
+  let calc_str_width idx width_infos offset=
+    let len= Array.length width_infos in
+    let rec fold acc idx=
+      if idx < len then
+        let width= width_infos.(idx) in
+        if width >= 0 then
+          fold (acc+width) (idx+1)
+        else
+          Error (offset+idx)
+      else
+        Ok acc
+    in
+    fold 0 idx
+  in
+  let rec calc_width set idx len offset=
     if len = 0 then
       Ok 0
     else
       match set with
-      | Return-> Error (start + len_all - len)
+      | Newline | Return | ReturnNewline -> Error (start + offset) (* indicate the position of the error *)
       | String line->
-        Ok (Array.fold_left acc 0 (Array.sub line.width_info idx len))
+        if tolerant then
+          Ok (Array.fold_left tolerant_add 0 (Array.sub line.width_info idx len))
+        else
+          calc_str_width idx (Array.sub line.width_info idx len) offset
       | Concat (set1, set2, _,_,_)->
         let len1= length set1 in
         if idx + len <= len1 then
-          unsafe_width set1 idx len
+          calc_width set1 idx len offset
         else if idx >= len1 then
-          unsafe_width set2 (idx-len1) len
+          calc_width set2 (idx-len1) len (offset+len1)
         else
-          let r1= unsafe_width set1 idx (len1 - idx)
-          and r2= unsafe_width set2 0 (len - len1 + idx) in
+          let r1= calc_width set1 idx (len1 - idx) offset
+          and r2= calc_width set2 0 (len - (len1 - idx)) (offset+len1) in
           match r1, r2 with
           | Error ofs, _-> Error ofs
           | Ok _, Error ofs-> Error ofs
           | Ok w1, Ok w2-> Ok (w1 + w2)
   in
-  unsafe_width set idx len
+  calc_width set idx len 0
 
 let width ?(tolerant=false) set idx len =
   if idx < 0 || len < 0 || idx + len > length set then
@@ -107,7 +128,7 @@ let force_width set idx len=
       0
     else
       match set with
-      | Return-> 0
+      | Newline | Return | ReturnNewline -> 0
       | String line->
         Array.fold_left acc 0 (Array.sub line.width_info idx len)
       | Concat (set1, set2, _,_,_)->
@@ -134,7 +155,7 @@ let rec line_index_rec set ofs acc =
   match set with
   | String _ ->
     acc
-  | Return ->
+  | Newline | Return | ReturnNewline ->
     if ofs = 0 then
       acc
     else
@@ -156,7 +177,7 @@ let rec line_start_rec set idx acc =
   match set with
   | String _ ->
     acc
-  | Return ->
+  | Newline | Return | ReturnNewline ->
     if idx = 0 then
       acc
     else
@@ -213,28 +234,28 @@ let append set1 set2 =
     let d1 = depth set1 and d2 = depth set2 in
     if d1 > d2 + 2 then begin
       match set1 with
-      | String _ | Return ->
+      | String _ | Newline | Return | ReturnNewline ->
         assert false
       | Concat(set1_1, set1_2, _, _, _) ->
         if depth set1_1 >= depth set1_2 then
           concat set1_1 (concat set1_2 set2)
         else begin
           match set1_2 with
-          | String _ | Return ->
+          | String _ | Newline | Return | ReturnNewline ->
             assert false
           | Concat(set1_2_1, set1_2_2, _, _, _) ->
             concat (concat set1_1 set1_2_1) (concat set1_2_2 set2)
         end
     end else if d2 > d1 + 2 then begin
       match set2 with
-      | String _ | Return ->
+      | String _ | Newline | Return | ReturnNewline ->
         assert false
       | Concat(set2_1, set2_2, _, _, _) ->
         if depth set2_2 >= depth set2_1 then
           concat (concat set1 set2_1) set2_2
         else begin
           match set2_1 with
-          | String _ | Return ->
+          | String _ | Newline | Return | ReturnNewline ->
             assert false
           | Concat(set2_1_1, set2_1_2, _, _, _) ->
             concat (concat set1 set2_1_1) (concat set2_1_2 set2_2)
@@ -249,8 +270,20 @@ let rec unsafe_sub set idx len =
     let width_info= Array.sub line.width_info idx length in
     let width= Array.fold_left (+) 0 width_info in
     String { length; width; width_info }
+  | Newline ->
+    if len = 1 then
+      Newline
+    else
+      String (empty_line ())
   | Return ->
     if len = 1 then
+      Return
+    else
+      String (empty_line ())
+  | ReturnNewline ->
+    if len = 2 then
+      ReturnNewline
+    else if len = 1 then
       Return
     else
       String (empty_line ())
